@@ -1,0 +1,8 @@
+-DarchetypeGroupId=org.apache.flink \
+    -DarchetypeArtifactId=flink-quickstart-java \
+    -DarchetypeVersion=1.6.1 \
+    -DgroupId=VehicleTelematics \
+    -DartifactId=VehicleTelematics \
+    -Dversion=0.1 \
+    -Dpackage=myflink \
+    -DinteractiveMode=false
