@@ -23,6 +23,7 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple6;
 import org.apache.flink.api.java.tuple.Tuple8;
+import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
@@ -47,7 +48,7 @@ public class StreamingJob {
 	public static void main(String[] args) throws Exception {
 		// set up the streaming execution environment
 
-		final String file_path = "data/sample-traffic-3xways.txt";
+		final String file_path = "/home/can/IdeaProjects/CC_Flink/VehicleTelematics/data/sample-traffic-3xways.txt";
 
 		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
@@ -81,7 +82,7 @@ public class StreamingJob {
 						return output;
 					}
 				});
-		speedFines.writeAsCsv("speedfines.csv").setParallelism(1);
+		speedFines.writeAsCsv("speedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
 		KeyedStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple> keyedData = mapStream.keyBy(1);
 
