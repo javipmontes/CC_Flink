@@ -34,7 +34,7 @@ import static org.apache.commons.math3.util.FastMath.min;
  * <p>If you change the name of the main class (with the public static void main(String[] args))
  * method, change the respective entry in the POM.xml file (simply search for 'mainClass').
  */
-public class StreamingJob {
+public class Intentos_Javi {
 
 	public static void main(String[] args) throws Exception {
 		// set up the streaming execution environment

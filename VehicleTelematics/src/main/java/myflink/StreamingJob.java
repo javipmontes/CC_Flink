@@ -39,6 +39,10 @@ import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindow
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
+import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
+import org.apache.flink.api.common.functions.ReduceFunction;
+import org.apache.flink.api.java.utils.ParameterTool;
+
 
 import java.util.Iterator;
 import java.util.Objects;
@@ -64,12 +68,17 @@ public class StreamingJob {
 	public static void main(String[] args) throws Exception {
 		// set up the streaming execution environment
 
-		final String file_path = "/home/can/IdeaProjects/CC_Flink/VehicleTelematics/data/sample-traffic-3xways.txt";
+		ParameterTool parameter = ParameterTool.fromArgs(args);
+
+		final String input_path = parameter.get("input");
+
+		final String output_path = parameter.get("output", "results");
 
 		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
 		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 
-		DataStreamSource<String> data = env.readTextFile(file_path);
+		DataStreamSource<String> data = env.readTextFile(input_path);
 
 		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> mapStream = data.
 				map(new MapFunction<String, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
@@ -99,28 +108,71 @@ public class StreamingJob {
 						return output;
 					}
 				});
-		speedFines.writeAsCsv("speedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+		speedFines.writeAsCsv(output_path + "/speedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+
 		// Multas por tramo
-		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> segmentVehicles = mapStream.
-				filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
-					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> vehicleData) throws Exception {
-						return 52 <= vehicleData.f6 && vehicleData.f6 <= 56;
+		//Filter the tuples that are between segments 52 and 56
+		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_in_segments = mapStream
+				.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
+					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception{
+						return in.f6 <= 56 && in.f6 >= 52;
 					}
 				});
 
-		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> segmentKeyedData = segmentVehicles
-				.assignTimestampsAndWatermarks(new AssignerWithPunctuatedWatermarks<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
-					@Override
-					public long extractTimestamp(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> vehicleData, long l) {
-						return vehicleData.f0;
-					}
-					@Override
-					public Watermark checkAndGetNextWatermark(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> lastElement, long l) {
-						return null;
-					}
+        //Filter the tuples that pass through a lane equals to 0 or 4
+        DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_in_forbidden_lane = cars_in_segments
+                .filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
+                    public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception{
+                        return in.f4 != 0 || in.f4 != 1;
+                    }
+                });
 
 
+		//Assign a Timestamp based on the first column and key the tuples by the VID
+		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+
+		KeyedStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple> cars_in_segments_with_time = cars_in_segments
+				.assignTimestampsAndWatermarks(new AscendingTimestampExtractor<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
+					public long extractAscendingTimestamp(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> input){
+						return input.f0*1000;
+					}
+				})
+				.keyBy(1);
+
+		//f0 tiempo, f1 id, f2 velocidad, f3 xway, f4 lane, f5 direccion, f6 segmento y f7 posisicón
+		//f0 tiempo 1, f1 id, f2 tiempo 2, f3 xway, f4 dirección, f5 avg speed, f6 lane, f7 posición (inicial?)
+		//Create the session window and apply a reduce function that averages the speeds of the elements for each window
+		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_windowed = cars_in_segments_with_time
+				.window(EventTimeSessionWindows.withGap(Time.seconds(60)))
+				.reduce(new ReduceFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
+					public Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> reduce(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t1, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t2) {
+						return new Tuple8<>(t1.f0, t1.f1, t2.f0, t1.f3, t2.f5, (int) (((max(t1.f7, t2.f7) - min(t1.f7, t2.f7))/(t2.f0 - t1.f0)) * 2.237), t2.f4, t1.f7);
+					};
 				});
+
+		//Reordering the output tuples
+		SingleOutputStreamOperator<Tuple6<Long, Long, Integer, Integer, Integer, Integer>> avg_cars = cars_windowed
+				.map(new MapFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple6<Long, Long, Integer, Integer, Integer, Integer>>() {
+					@Override
+					public Tuple6<Long, Long, Integer, Integer, Integer, Integer> map(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> input) throws Exception {
+						Tuple6<Long, Long, Integer, Integer, Integer, Integer> output = new Tuple6<Long, Long, Integer, Integer, Integer, Integer>(input.f0, input.f2, input.f1,
+								input.f3, input.f4, input.f5);
+						return output;
+					}
+				});
+
+		//Filter those cars with a higher AvgSpd than 60 mph
+		SingleOutputStreamOperator<Tuple6<Long, Long, Integer, Integer, Integer, Integer>> overspeed_cars = avg_cars
+				.filter(new FilterFunction<Tuple6<Long, Long, Integer, Integer, Integer, Integer>>() {
+					@Override
+					public boolean filter(Tuple6<Long, Long, Integer, Integer, Integer, Integer> in) throws Exception {
+						return in.f5 > 60;
+					}
+				});
+
+		overspeed_cars.writeAsCsv(output_path + "/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+
+
 		// Detección de accidentes
 		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> stoppedVehicles = mapStream.filter(
 				new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
@@ -143,30 +195,7 @@ public class StreamingJob {
 		SingleOutputStreamOperator<Tuple7<Long, Long, Integer, Integer, Integer, Integer, Long>> accidentVehicles = keyedStoppedVehicles
 				.window(SlidingEventTimeWindows.of(Time.seconds(120), Time.seconds(30))).apply(new DetectAccident());
 
-		accidentVehicles.writeAsCsv("accidents.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
-
-
-
-
-		/*
-		 * Here, you can start creating your execution plan for Flink.
-		 *
-		 * Start with getting some data from the environment, like
-		 * 	env.readTextFile(textPath);
-		 *
-		 * then, transform the resulting DataStream<String> using operations
-		 * like
-		 * 	.filter()
-		 * 	.flatMap()
-		 * 	.join()
-		 * 	.coGroup()
-		 *
-		 * and many more.
-		 * Have a look at the programming guide for the Java API:
-		 *
-		 * http://flink.apache.org/docs/latest/apis/streaming/index.html
-		 *
-		 */
+		accidentVehicles.writeAsCsv(output_path + "/accidents.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
 		// execute program
 		env.execute("Flink Streaming Java API Skeleton");
@@ -207,4 +236,8 @@ public class StreamingJob {
 
 		}
 	}
+
+    public Integer getVID(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> value) throws Exception {
+        return value.f1;
+    }
 }
