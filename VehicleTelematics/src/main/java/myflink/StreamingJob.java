@@ -119,15 +119,6 @@ public class StreamingJob {
 					}
 				});
 
-        //Filter the tuples that pass through a lane equals to 0 or 4
-        DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_in_forbidden_lane = cars_in_segments
-                .filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
-                    public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception{
-                        return in.f4 != 0 || in.f4 != 1;
-                    }
-                });
-
-
 		//Assign a Timestamp based on the first column and key the tuples by the VID
 		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 
