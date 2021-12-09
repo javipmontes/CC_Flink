@@ -22,8 +22,7 @@ import org.apache.flink.streaming.api.datastream.WindowedStream;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.windowing.assigners.ProcessingTimeSessionWindows;
 
-
-
+import static org.apache.commons.math3.util.FastMath.min;
 
 
 /**
@@ -38,7 +37,7 @@ import org.apache.flink.streaming.api.windowing.assigners.ProcessingTimeSessionW
  * <p>If you change the name of the main class (with the public static void main(String[] args))
  * method, change the respective entry in the POM.xml file (simply search for 'mainClass').
  */
-public class StreamingJob {
+public class Intentos_Javi {
 
 	public static void main(String[] args) throws Exception {
 		// set up the streaming execution environment
@@ -47,7 +46,7 @@ public class StreamingJob {
 
 		final String input_path = parameter.get("input");
 
-		final String output_path = parameter.get("output", "speedfines.csv");
+		final String output_path = parameter.get("output", "results");
 
 		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
@@ -100,29 +99,11 @@ public class StreamingJob {
 					}
 				});
 
-		//Voy a hacer pruebas solo com el VID 0, 1 y 2
-		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> coches_prueba = cars_in_segments
-				.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
-					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception{
-						return in.f1 == 0 || in.f1 == 1 || in.f1 == 2;
-					}
-				});
-
-		/*
-		coches_prueba
-				.keyBy(1)
-				.reduce(new ReduceFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
-					public Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> reduce(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t1, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t2) {
-						return new Tuple8<>(t1.f0, t1.f1, t1.f2+t2.f2, t1.f3, t1.f4, t1.f5, t1.f6, t1.f7);
-					}
-				});
-
-		*/
 
 		//Assign a Timestamp based on the first column and key the tuples by the VID
 		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 
-		KeyedStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple> cars_in_segments_with_time = coches_prueba
+		KeyedStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple> cars_in_segments_with_time = cars_in_segments
 				.assignTimestampsAndWatermarks(new AscendingTimestampExtractor<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
 					public long extractAscendingTimestamp(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> input){
 						return input.f0*1000;
@@ -132,33 +113,15 @@ public class StreamingJob {
 
 
 
-		WindowedStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Integer, TimeWindow> cars_windowed = cars_in_segments_with_time
-				.window(EventTimeSessionWindows.withGap(Time.minutes(1)))
+		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_windowed = cars_in_segments_with_time
+				.window(EventTimeSessionWindows.withGap(Time.seconds(60)))
 				.reduce(new ReduceFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
 					public Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> reduce(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t1, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t2) {
-						return new Tuple8<>(t1.f0, t1.f1, t1.f2+t2.f2, t1.f3, t1.f4, t1.f5, t1.f6, t1.f7);
+						return new Tuple8<>(min(t1.f0, t2.f0), t1.f1, t1.f2+t2.f2/2, t1.f3, t1.f4, t1.f5, t1.f6, t1.f7);
 					};
-
-		/*
-		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> sum_cars = cars_in_segments_with_time
-				.reduce(new ReduceFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
-					public Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> sum_cars(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t1, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t2) throws Exception{
-						Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> out = new Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>(t1.f0, t1.f1, t1.f2+t2.f2, t1.f3, t1.f4, t1.f5, t1.f6, t1.f7);
-						return out;
-					}
 				});
 
 
-		SingleOutputStreamOperator<Tuple6<Long, Integer, Integer, Integer, Integer, Long>> f2_output = sum_cars
-                .map(new MapFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple6<Long, Integer, Integer, Integer, Integer, Long>>() {
-                    @Override
-                    public Tuple6<Long, Integer, Integer, Integer, Integer, Long> map(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> input) throws Exception { //Enters a tuple8 and exits a tuple6
-                        Tuple6<Long, Integer, Integer, Integer, Integer, Long> output = new Tuple6(input.f0, input.f1, input.f3,
-                                input.f6, input.f5, input.f2);
-                        return output; //Returns the tuple6 for the output of the SpeedRadar functionality
-                    }
-                });
-   				 */
 
 		cars_windowed.writeAsCsv(output_path + "/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
