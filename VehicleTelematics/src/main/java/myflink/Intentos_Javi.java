@@ -1,4 +1,3 @@
-
 package myflink;
 
 import org.apache.flink.api.common.functions.FilterFunction;
@@ -37,7 +36,7 @@ import static org.apache.commons.math3.util.FastMath.min;
  * <p>If you change the name of the main class (with the public static void main(String[] args))
  * method, change the respective entry in the POM.xml file (simply search for 'mainClass').
  */
-public class Intentos_Javi {
+public class StreamingJob {
 
 	public static void main(String[] args) throws Exception {
 		// set up the streaming execution environment
@@ -89,8 +88,7 @@ public class Intentos_Javi {
 		//The result speedFines is written in a CSV with name given by the "output" parameter
 		speedFines.writeAsCsv(output_path + "/speedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
-        //Second functionality: AverageSpeedControl
-
+		//Second functionality: AverageSpeedControl
 		//Filter the tuples that are between segments 52 and 56
 		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_in_segments = mapStream
 				.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
@@ -112,19 +110,60 @@ public class Intentos_Javi {
 				.keyBy(1);
 
 
-
+		//Create the session window and apply a reduce function that averages the speeds of the elements for each window
 		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_windowed = cars_in_segments_with_time
 				.window(EventTimeSessionWindows.withGap(Time.seconds(60)))
 				.reduce(new ReduceFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
 					public Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> reduce(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t1, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t2) {
-						return new Tuple8<>(min(t1.f0, t2.f0), t1.f1, t1.f2+t2.f2/2, t1.f3, t1.f4, t1.f5, t1.f6, t1.f7);
+						//return new Tuple8<>(t1.f0, t1.f1, (t1.f2+t2.f2)/2, t1.f3, t1.f4, t1.f5, t1.f6, t1.f7);
+						return new Tuple8<>(t1.f0, t1.f1, (t1.f2+t2.f2)/2, t1.f3, t1.f4, t1.f5, t1.f6, t2.f0);
 					};
 				});
 
+		//Reordering the output tuples
+
+		SingleOutputStreamOperator<Tuple6<Long, Long, Integer, Integer, Integer, Long>> avg_cars = cars_windowed
+				.map(new MapFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple6<Long, Long, Integer, Integer, Integer, Long>>() {
+					@Override
+					public Tuple6<Long, Long, Integer, Integer, Integer, Long> map(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> input) throws Exception {
+						Tuple6<Long, Long, Integer, Integer, Integer, Long> output = new Tuple6(input.f0, input.f7, input.f1,
+								input.f3, input.f5, input.f2);
+						return output;
+					}
+				});
+
+		//Filter those cars with a higher AvgSpd than 60 mph
+		DataStream<Tuple6<Long, Long, Integer, Integer, Integer, Long>> overspeed_cars = avg_cars
+				.filter(new FilterFunction<Tuple6<Long, Long, Integer, Integer, Integer, Long>>(){
+					public boolean filter(Tuple6<Long, Long, Integer, Integer, Integer, Long> in) throws Exception{
+						return in.f5 >= 60;
+					}
+				});
 
 
-		cars_windowed.writeAsCsv(output_path + "/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+		overspeed_cars.writeAsCsv(output_path + "/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
-        env.execute("Flink Streaming Java API Skeleton");
+		//Operaciones de prueba
+		//prueba: imprime en un csv las tuplas de los coches 0,1 y 2 entre los segmentos 52 y 26
+		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> coches_prueba = cars_in_segments
+				.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
+					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception{
+						return in.f1 == 0 || in.f1 == 1 || in.f1 == 2;
+					}
+				});
+
+		coches_prueba.writeAsCsv(output_path + "/coches_prueba.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+
+		//prueba: Filtra los resultados de avgspeedfines para que solo aparezcan los coches 0, 1 y 2
+		DataStream<Tuple6<Long, Long, Integer, Integer, Integer, Long>> avg_coches_prueba = avg_cars
+				.filter(new FilterFunction<Tuple6<Long, Long, Integer, Integer, Integer, Long>>(){
+					public boolean filter(Tuple6<Long, Long, Integer, Integer, Integer, Long> in) throws Exception{
+						return in.f2 == 0 || in.f2 == 1 || in.f2 == 2;
+					}
+				});
+
+		avg_cars.writeAsCsv(output_path + "/avg_coches_prueba.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
+
+		env.execute("Flink Streaming Java API Skeleton");
 	}
 }
