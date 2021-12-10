@@ -251,7 +251,7 @@ public class VehicleTelematics {
 	}
 
 	/* The DetectAccident class receives tuples that have a speed equals to 0 and checks if the positions of adjacent
-	tuples are the same and returns (collects) a Tuple7 with the required information about the car.*/
+	tuples are the same, and finally returns (collects) a Tuple7 with the required information about the car.*/
 	public static class DetectAccident implements WindowFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer,
 			Integer, Long>, Tuple7<Long, Long, Integer, Integer, Integer, Integer, Long>, Tuple, TimeWindow> {
 		public void apply(Tuple tuple, TimeWindow timeWindow, Iterable<Tuple8<Long, Integer, Long, Integer, Integer,
