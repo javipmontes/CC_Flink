@@ -31,17 +31,13 @@ import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
 import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
 import org.apache.flink.streaming.api.functions.windowing.WindowFunction;
-import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.util.Collector;
 import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
-import org.apache.flink.api.common.functions.ReduceFunction;
-import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.api.common.functions.AggregateFunction;
 
 
@@ -67,20 +63,19 @@ import static org.apache.commons.math3.util.FastMath.min;
 public class VehicleTelematics {
 
 	public static void main(String[] args) throws Exception {
+
+		final String input_path = args[0];		// Obtain the path to the data file as a command line argument
+
+		final String output_path = args[1];		// Obtain the path of the output folder as a command line argument
+
 		// set up the streaming execution environment
-
-		ParameterTool parameter = ParameterTool.fromArgs(args);
-
-		final String input_path = parameter.get("input");
-
-		final String output_path = parameter.get("output", "results");
-
 		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
 		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
-
+		// Read the data from the file provided
 		DataStreamSource<String> data = env.readTextFile(input_path);
 
+		// Reorganize the dat from the file in a variable to work with
 		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> mapStream = data.
 				map(new MapFunction<String, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
 					public Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> map(String in) throws Exception{
@@ -93,6 +88,10 @@ public class VehicleTelematics {
 						return out;
 					}
 				});
+
+		/* First functionality: Speed radar. Detect cars above the 90 miles/h limit. Done by applying a filter in the
+		3 element of the mapped data tuple, the one related to the speed.*/
+
 		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> speeders= mapStream
 				.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
 					@Override
@@ -100,6 +99,8 @@ public class VehicleTelematics {
 						return in.f2>90;
 					}
 				});
+		/* After identifying the vehicles that have overpassed the speed limit reorganize the information of these vehicles
+		to produce the output in the desired format.*/
 		SingleOutputStreamOperator<Tuple6<Long, Integer, Integer, Integer, Integer, Long>> speedFines = speeders
 				.map(new MapFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple6<Long, Integer, Integer, Integer, Integer, Long>>() {
 					@Override
@@ -109,9 +110,18 @@ public class VehicleTelematics {
 						return output;
 					}
 				});
+		/* Write the file containing the information relative to the vehicles that has overpassed the speed limit. With
+		parallelism 1. */
 		speedFines.writeAsCsv(output_path + "/speedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
-		// Multas por tramo
+		/* Second functionality: average speed radar for a segment. It will detect the cars that has overpassed the limit
+		of the segment 52,56 that is 60 miles/h. For this it first will filter the cars that are in this segment.
+		Once these cars are filtered, it will assign the time stamp to work with windows. After the timestamp events are
+		keyed by the vehicle ID and windowed with a session event with a gap of 60 seconds.
+		For each window, an aggregate function is applied to retrieve the min and maximum times and position for each
+		vehicle, that are going to be used for the computation of the average speed. If the cars don't complete the
+		segment it is not considered for the detection. The results are filtered to get only those that has overpassed
+		the limit of 60 miles/h.*/
 		DataStream<Tuple6<Long, Long, Integer, Integer, Integer, Double>> carsAvg = mapStream.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
 					@Override
 					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception {
@@ -131,7 +141,8 @@ public class VehicleTelematics {
 					@Override
 					public Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> createAccumulator() {
 						return new Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer>(9223372036854775807L, 0L,
-								0, 0, 0, 9223372036854775807L, 0L, 1);
+								0, 0, 0, 9223372036854775807L, 0L, 1); /* The minimum position and times are initialized
+						to the biggest value possible in a long while the rest are initialized to 0*/
 					}
 
 					@Override
@@ -152,6 +163,8 @@ public class VehicleTelematics {
 					@Override
 					public Tuple6<Long, Long, Integer, Integer, Integer, Double> getResult(Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> values) {
 						if (values.f7 == 1 || values.f7 ==2 || values.f7 == 3) {
+							/* Multiply by a factor of 2.237 to pass from m/s to miles/h and reorganize the information
+							to meet the critter needed.*/
 							double avgSpeed = (values.f6 - values.f5) / (double)(values.f1-values.f0)*2.237;
 							return new Tuple6<Long, Long, Integer, Integer, Integer, Double>(
 									values.f0, values.f1, values.f2, values.f3, values.f4, avgSpeed
@@ -177,6 +190,9 @@ public class VehicleTelematics {
 						return speeds.f5>60;
 					}
 				});
+
+		/* Write the file containing the information relative to the vehicles that has overpassed the speed limit. With
+		parallelism 1. */
 		carsAvg.writeAsCsv(output_path+"/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
 		// Detección de accidentes
