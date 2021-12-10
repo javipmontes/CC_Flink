@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-package myflink;
+package master;
 
 import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -42,6 +42,7 @@ import org.apache.flink.util.Collector;
 import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.api.common.functions.AggregateFunction;
 
 
 import java.util.Iterator;
@@ -63,7 +64,7 @@ import static org.apache.commons.math3.util.FastMath.min;
  * <p>If you change the name of the main class (with the public static void main(String[] args))
  * method, change the respective entry in the POM.xml file (simply search for 'mainClass').
  */
-public class StreamingJob {
+public class VehicleTelematics {
 
 	public static void main(String[] args) throws Exception {
 		// set up the streaming execution environment
@@ -111,58 +112,72 @@ public class StreamingJob {
 		speedFines.writeAsCsv(output_path + "/speedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
 		// Multas por tramo
-		//Filter the tuples that are between segments 52 and 56
-		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_in_segments = mapStream
-				.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
-					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception{
+		DataStream<Tuple6<Long, Long, Integer, Integer, Integer, Double>> carsAvg = mapStream.filter(new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
+					@Override
+					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> in) throws Exception {
 						return in.f6 <= 56 && in.f6 >= 52;
 					}
-				});
+				}).assignTimestampsAndWatermarks(new AscendingTimestampExtractor<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
+													 @Override
+													 public long extractAscendingTimestamp(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> vehicleData) {
+														 return vehicleData.f0*1000;
+													 }
+												 }
+				).keyBy(1).window(EventTimeSessionWindows.withGap(Time.seconds(60)))
+				.aggregate(new AggregateFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>,
+						Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer>,
+						Tuple6<Long, Long, Integer, Integer, Integer, Double>>() {
 
-		//Assign a Timestamp based on the first column and key the tuples by the VID
-		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
-
-		KeyedStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple> cars_in_segments_with_time = cars_in_segments
-				.assignTimestampsAndWatermarks(new AscendingTimestampExtractor<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>(){
-					public long extractAscendingTimestamp(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> input){
-						return input.f0*1000;
-					}
-				})
-				.keyBy(1);
-
-		//f0 tiempo, f1 id, f2 velocidad, f3 xway, f4 lane, f5 direccion, f6 segmento y f7 posisicón
-		//f0 tiempo 1, f1 id, f2 tiempo 2, f3 xway, f4 dirección, f5 avg speed, f6 lane, f7 posición (inicial?)
-		//Create the session window and apply a reduce function that averages the speeds of the elements for each window
-		SingleOutputStreamOperator<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> cars_windowed = cars_in_segments_with_time
-				.window(EventTimeSessionWindows.withGap(Time.seconds(60)))
-				.reduce(new ReduceFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
-					public Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> reduce(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t1, Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> t2) {
-						return new Tuple8<>(t1.f0, t1.f1, t2.f0, t1.f3, t2.f5, (int) (((max(t1.f7, t2.f7) - min(t1.f7, t2.f7))/(t2.f0 - t1.f0)) * 2.237), t2.f4, t1.f7);
-					};
-				});
-
-		//Reordering the output tuples
-		SingleOutputStreamOperator<Tuple6<Long, Long, Integer, Integer, Integer, Integer>> avg_cars = cars_windowed
-				.map(new MapFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>, Tuple6<Long, Long, Integer, Integer, Integer, Integer>>() {
 					@Override
-					public Tuple6<Long, Long, Integer, Integer, Integer, Integer> map(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> input) throws Exception {
-						Tuple6<Long, Long, Integer, Integer, Integer, Integer> output = new Tuple6<Long, Long, Integer, Integer, Integer, Integer>(input.f0, input.f2, input.f1,
-								input.f3, input.f4, input.f5);
-						return output;
+					public Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> createAccumulator() {
+						return new Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer>(9223372036854775807L, 0L,
+								0, 0, 0, 9223372036854775807L, 0L, 1);
 					}
-				});
 
-		//Filter those cars with a higher AvgSpd than 60 mph
-		SingleOutputStreamOperator<Tuple6<Long, Long, Integer, Integer, Integer, Integer>> overspeed_cars = avg_cars
-				.filter(new FilterFunction<Tuple6<Long, Long, Integer, Integer, Integer, Integer>>() {
 					@Override
-					public boolean filter(Tuple6<Long, Long, Integer, Integer, Integer, Integer> in) throws Exception {
-						return in.f5 > 60;
+					public Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> add(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> value, Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> keepValue) {
+						keepValue.f0 = min(value.f0, keepValue.f0);
+						keepValue.f1 = max(value.f0, keepValue.f1);
+						keepValue.f2 = value.f1;
+						keepValue.f3 = value.f3;
+						keepValue.f4 = value.f5;
+						keepValue.f5 = min(value.f7, keepValue.f5);
+						keepValue.f6 = max(value.f7, keepValue.f6);
+						if (value.f4 == 0 || value.f4 == 4) {
+							keepValue.f7 = value.f4;
+						}
+						return keepValue;
+					}
+
+					@Override
+					public Tuple6<Long, Long, Integer, Integer, Integer, Double> getResult(Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> values) {
+						if (values.f7 == 1 || values.f7 ==2 || values.f7 == 3) {
+							double avgSpeed = (values.f6 - values.f5) / (double)(values.f1-values.f0)*2.237;
+							return new Tuple6<Long, Long, Integer, Integer, Integer, Double>(
+									values.f0, values.f1, values.f2, values.f3, values.f4, avgSpeed
+							);
+						}
+						return null;
+					}
+
+					@Override
+					public Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> merge(Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> keepValue, Tuple8<Long, Long, Integer, Integer, Integer, Long, Long, Integer> acc1) {
+						keepValue.f0 = min(keepValue.f0, acc1.f0);
+						keepValue.f1 = max(keepValue.f1, acc1.f1);
+						keepValue.f5 = min(keepValue.f5, keepValue.f5);
+						keepValue.f6 = max(keepValue.f6, keepValue.f6);
+						if (acc1.f7 == 0 || acc1.f7 == 4) {
+							keepValue.f7 = acc1.f7;
+						}
+						return keepValue;
+					}
+				}).filter(new FilterFunction<Tuple6<Long, Long, Integer, Integer, Integer, Double>>() {
+					@Override
+					public boolean filter(Tuple6<Long, Long, Integer, Integer, Integer, Double> speeds) throws Exception {
+						return speeds.f5>60;
 					}
 				});
-
-		overspeed_cars.writeAsCsv(output_path + "/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
-
+		carsAvg.writeAsCsv(output_path+"/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
 		// Detección de accidentes
 		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> stoppedVehicles = mapStream.filter(
