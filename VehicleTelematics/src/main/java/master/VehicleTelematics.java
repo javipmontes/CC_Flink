@@ -212,13 +212,17 @@ public class VehicleTelematics {
 		parallelism 1. */
 		carsAvg.writeAsCsv(output_path+"/avgspeedfines.csv", FileSystem.WriteMode.OVERWRITE).setParallelism(1);
 
-		// Detección de accidentes
+		/* Third functionality: detects stopped vehicles on any segments. A vehicle is stopped when it reports at least
+		4 consecutive events. We keep those tuples which contain a speed equals to 0 and key them by the VID. Then, a
+		sliding window is created with a size of 120 seconds (4 tuples) and slide of 30 seconds (1 tuple) this way it
+		keeps moving tuple by tuple, apllying the function DetectAccident over each of them.
+		 */
 		DataStream<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>> stoppedVehicles = mapStream
 				.filter( new FilterFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>>() {
 					@Override
 					public boolean filter(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long>
 												  vehicleData) throws Exception {
-						return vehicleData.f3 == 0;
+						return vehicleData.f2 == 0;
 					}
 				}
 		);
@@ -246,7 +250,8 @@ public class VehicleTelematics {
 		env.execute("Flink Streaming Java API Skeleton");
 	}
 
-
+	/* The DetectAccident class receives tuples that have a speed equals to 0 and checks if the positions of adjacent
+	tuples are the same and returns (collects) a Tuple7 with the required information about the car.*/
 	public static class DetectAccident implements WindowFunction<Tuple8<Long, Integer, Long, Integer, Integer, Integer,
 			Integer, Long>, Tuple7<Long, Long, Integer, Integer, Integer, Integer, Long>, Tuple, TimeWindow> {
 		public void apply(Tuple tuple, TimeWindow timeWindow, Iterable<Tuple8<Long, Integer, Long, Integer, Integer,
@@ -285,9 +290,4 @@ public class VehicleTelematics {
 
 		}
 	}
-
-    public Integer getVID(Tuple8<Long, Integer, Long, Integer, Integer, Integer, Integer, Long> value)
-			throws Exception {
-        return value.f1;
-    }
 }
